@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CocoaVan POS</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,'Noto Sans Thai',sans-serif;background:#faf6f3;color:#3e2723}
+button,input,select,textarea{font:inherit}
+.b{background:#6d4c41;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}.b.o{background:#fff;color:#6d4c41;border:1px solid #6d4c41}.b.r{background:#c62828}
+input,select,textarea{padding:8px;border:1px solid #d7ccc8;border-radius:8px;width:100%}
+input[type=radio]{width:auto}
+.c{background:#fff;border-radius:12px;padding:14px;margin:10px 0;box-shadow:0 1px 3px #0002}
+.top{display:flex;gap:8px;align-items:center;justify-content:space-between;background:#4e342e;color:#fff;padding:10px 14px;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.it{background:#fff;border-radius:12px;padding:10px;text-align:center;cursor:pointer;border:1px solid #d7ccc8}
+.it img{width:100%;height:80px;object-fit:cover;border-radius:8px}.it.off{opacity:.35;pointer-events:none}
+.row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;flex-wrap:wrap}
+.w{max-width:1000px;margin:auto;padding:10px}.pos{display:grid;grid-template-columns:1fr 320px;gap:10px}
+@media(max-width:800px){.pos{grid-template-columns:1fr}}
+.mut{color:#8d6e63;font-size:.85em}.f{display:flex;gap:8px;flex-wrap:wrap}.f>*{flex:1;min-width:120px}
+table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid #eee;text-align:right}td:first-child,th:first-child{text-align:left}
+</style></head><body><div id="app"></div>
+<script type="module">
+import {initializeApp,deleteApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,signOut,onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,doc,getDoc,setDoc,updateDoc,collection,query,where,onSnapshot,serverTimestamp,writeBatch,getDocs} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const $=s=>document.querySelector(s), app=$('#app');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad=n=>String(n).padStart(2,'0'), ymd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const baht=n=>Number(n||0).toLocaleString('th-TH'), mail=u=>u.trim().toLowerCase()+'@pos.local';
+let cfg=null; try{cfg=JSON.parse(localStorage.getItem('cv_cfg'))}catch{}
+let auth,db,me=null,subs=[];
+const stop=()=>{subs.forEach(f=>f());subs=[]};
+const shell=(title,body)=>{app.innerHTML=`<div class="top"><b>🍫 CocoaVan POS · ${title}</b><button class="b o" id="lo">ออกจากระบบ</button></div>${body}`;$('#lo').onclick=()=>signOut(auth)};
+
+function compress(file,max,cb){const r=new FileReader();r.onload=()=>{const i=new Image();i.onload=()=>{const k=Math.min(1,max/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=i.width*k;c.height=i.height*k;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(i,0,0,c.width,c.height);cb(c.toDataURL('image/jpeg',.75))};i.src=r.result};r.readAsDataURL(file)}
+async function commit(ops){for(let i=0;i<ops.length;i+=20){const b=writeBatch(db);ops.slice(i,i+20).forEach(f=>f(b));await b.commit()}}
+function download(name,obj){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+function clean(list){return list.map(x=>({name:String(x?.name||'').trim(),price:Number(x?.price),image:/^(data:image\/|https?:\/\/)/i.test(x?.image||'')?x.image:'',available:x?.available!==false})).filter(x=>x.name&&isFinite(x.price)&&x.price>=0)}
+
+/* ---------- Setup / Login ---------- */
+function setup(){
+  app.innerHTML=`<div class="w"><div class="c"><h2>ตั้งค่าเชื่อมต่อ Firebase</h2><p class="mut">วางค่า firebaseConfig จาก Firebase Console (Project settings > Your apps) ค่านี้เก็บในเครื่องนี้เท่านั้น ไม่อยู่ในโค้ด</p><textarea id="cfg" rows="9"></textarea><p><button class="b" id="sv">บันทึก</button></p></div></div>`;
+  $('#sv').onclick=()=>{const t=$('#cfg').value,o={};
+    ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'].forEach(k=>{const m=t.match(new RegExp(k+'["\']?\\s*:\\s*["\']([^"\']+)["\']'));if(m)o[k]=m[1]});
+    if(!o.apiKey||!o.projectId||!o.appId)return alert('ไม่พบค่า apiKey / projectId / appId ในข้อความที่วาง');
+    localStorage.setItem('cv_cfg',JSON.stringify(o));location.reload()}
+}
+function login(msg=''){
+  app.innerHTML=`<div class="w" style="max-width:380px"><div class="c"><h2>🍫 เข้าสู่ระบบ</h2><p style="color:#c62828">${esc(msg)}</p><p><input id="u" placeholder="Username" autocapitalize="off"></p><p><input id="p" type="password" placeholder="Password"></p><button class="b" id="go" style="width:100%">เข้าสู่ระบบ</button><p class="mut"><a href="#" id="rs">เปลี่ยนการเชื่อมต่อ Firebase</a></p></div></div>`;
+  const go=()=>signInWithEmailAndPassword(auth,mail($('#u').value),$('#p').value).catch(()=>login('Username หรือ Password ไม่ถูกต้อง'));
+  $('#go').onclick=go;$('#p').onkeydown=e=>e.key==='Enter'&&go();
+  $('#rs').onclick=e=>{e.preventDefault();if(confirm('ลบค่าเชื่อมต่อในเครื่องนี้?')){localStorage.removeItem('cv_cfg');location.reload()}}
+}
+function boot(){
+  if(!cfg||!cfg.apiKey)return setup();
+  const fa=initializeApp(cfg);auth=getAuth(fa);
+  db=initializeFirestore(fa,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})});
+  onAuthStateChanged(auth,async u=>{stop();me=null;if(!u)return login();
+    try{const s=await getDoc(doc(db,'staff',u.uid));
+      if(!s.exists()||!s.data().active){app.innerHTML=`<div class="w"><div class="c">บัญชีนี้ยังไม่เปิดใช้งานหรือถูกปิด กรุณาติดต่อเจ้าของร้าน<p><button class="b" id="x">ออกจากระบบ</button></p></div></div>`;return $('#x').onclick=()=>signOut(auth)}
+      me={uid:u.uid,...s.data()};me.role==='owner'?owner():pos()
+    }catch(e){app.innerHTML=`<div class="w"><div class="c">เชื่อมต่อไม่สำเร็จ (ต้องออนไลน์เมื่อล็อกอินครั้งแรกของเครื่อง)<br><span class="mut">${esc(e.message)}</span><p><button class="b" onclick="location.reload()">ลองใหม่</button></p></div></div>`}
+  })
+}
+
+/* ---------- POS (พนักงานสาขา) ---------- */
+function pos(){
+  let menu=[],cart={},pay='cash',qr='';
+  shell(`${esc(me.branchCode)} · ${esc(me.displayName)}`,`<div class="w pos"><div><div class="grid" id="mn"></div><div class="c"><b>ออเดอร์วันนี้ของสาขา</b> <span id="sum" class="mut"></span><div id="ol"></div></div></div>
+  <div><div class="c"><h3>ตะกร้า</h3><div id="ct"></div><div class="row"><b>รวม</b><b id="tt">0</b></div>
+  <div class="row"><label><input type="radio" name="pm" value="cash" checked> เงินสด</label><label><input type="radio" name="pm" value="transfer"> โอน</label></div>
+  <div id="qr"></div><p><button class="b" id="ok" style="width:100%">ยืนยันการขาย</button></p></div></div></div>`);
+  const total=()=>Object.values(cart).reduce((a,i)=>a+i.price*i.qty,0);
+  const drawMenu=()=>{$('#mn').innerHTML=menu.map(m=>`<div class="it ${m.available===false?'off':''}" data-id="${m.id}">${m.image?`<img src="${esc(m.image)}">`:''}<div><b>${esc(m.name)}</b></div><div>${baht(m.price)}</div></div>`).join('')||'<span class="mut">ยังไม่มีเมนูในสาขานี้ (ให้เจ้าของเพิ่มหรือนำเข้า)</span>'};
+  const drawCart=()=>{const L=Object.values(cart);$('#ct').innerHTML=L.map(i=>`<div class="row"><span>${esc(i.name)} × ${i.qty}</span><span><button class="b o" data-m="${i.id}">−</button> ${baht(i.price*i.qty)}</span></div>`).join('')||'<span class="mut">ยังไม่มีรายการ</span>';$('#tt').textContent=baht(total())};
+  const drawQR=()=>{$('#qr').innerHTML=pay==='transfer'&&qr?`<img src="${esc(qr)}" style="width:100%;max-width:240px;display:block;margin:auto">`:''};
+  $('#mn').onclick=e=>{const el=e.target.closest('.it');if(!el)return;const m=menu.find(x=>x.id===el.dataset.id);if(!m)return;(cart[m.id]??={id:m.id,name:m.name,price:Number(m.price),qty:0}).qty++;drawCart()};
+  $('#ct').onclick=e=>{const id=e.target.dataset.m;if(id&&cart[id]){if(--cart[id].qty<=0)delete cart[id];drawCart()}};
+  document.querySelectorAll('[name=pm]').forEach(r=>r.onchange=()=>{pay=r.value;drawQR()});
+  $('#ok').onclick=()=>{const items=Object.values(cart).map(i=>({id:i.id,name:i.name,price:i.price,qty:i.qty}));if(!items.length)return;
+    const d=ymd(new Date()),id=`${me.branchCode}-${d.replace(/-/g,'')}-${(Math.random().toString(36)+'000000').slice(2,8)}`;
+    setDoc(doc(db,'orders',id),{branchId:me.branchId,branchCode:me.branchCode,staffUid:me.uid,staffName:me.displayName,createdAt:serverTimestamp(),businessDate:d,items,total:total(),paymentMethod:pay,status:'paid'}).catch(e=>alert('บันทึกออเดอร์ไม่สำเร็จ: '+e.message));
+    cart={};drawCart()};
+  subs.push(onSnapshot(collection(db,'branches',me.branchId,'menu'),s=>{menu=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.name).localeCompare(b.name,'th'));drawMenu()}));
+  subs.push(onSnapshot(doc(db,'settings','payment'),d=>{qr=d.data()?.qr||'';drawQR()},()=>{}));
+  subs.push(onSnapshot(query(collection(db,'orders'),where('branchId','==',me.branchId),where('businessDate','==',ymd(new Date()))),s=>{
+    const L=s.docs.map(d=>({...d.data(),pending:d.metadata.hasPendingWrites,id:d.id})).sort((a,b)=>(b.createdAt?.toMillis?.()||Date.now())-(a.createdAt?.toMillis?.()||Date.now()));
+    $('#sum').textContent=`${L.length} บิล · ${baht(L.reduce((a,o)=>a+o.total,0))} บาท`;
+    $('#ol').innerHTML=L.slice(0,15).map(o=>`<div class="row"><span>${o.pending?'⏳ รอซิงก์ ':''}${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`).join('')}));
+  drawCart()
+}
+
+/* ---------- เจ้าของ ---------- */
+function owner(){
+  shell(`เจ้าของ · ${esc(me.displayName)}`,`<div class="w"><div class="f" id="tb" style="gap:6px"><button class="b" data-t="d">ยอดขาย</button><button class="b o" data-t="m">เมนูสาขา</button><button class="b o" data-t="s">สาขา/พนักงาน</button></div><div id="tab"></div></div>`);
+  const go=t=>{stop();document.querySelectorAll('#tb button').forEach(b=>b.className='b'+(b.dataset.t===t?'':' o'));({d:dash,m:menuTab,s:staffTab})[t]($('#tab'))};
+  $('#tb').onclick=e=>e.target.dataset.t&&go(e.target.dataset.t);go('d')
+}
+
+function dash(el){
+  el.innerHTML=`<div class="c"><input type="date" id="dt" value="${ymd(new Date())}" style="width:auto"> <span class="mut">อัพเดตสดอัตโนมัติ</span></div><div id="dv"></div>`;
+  const run=()=>{stop();subs.push(onSnapshot(query(collection(db,'orders'),where('businessDate','==',$('#dt').value)),s=>{
+    const L=s.docs.map(d=>d.data()),by={};let T=0;
+    L.forEach(o=>{const b=by[o.branchCode]??={n:0,t:0,c:0,x:0};b.n++;b.t+=o.total;o.paymentMethod==='cash'?b.c+=o.total:b.x+=o.total;T+=o.total});
+    L.sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0));
+    $('#dv').innerHTML=`<div class="c"><h2>รวมทุกสาขา ${baht(T)} บาท <span class="mut">(${L.length} บิล)</span></h2><table><tr><th>สาขา</th><th>บิล</th><th>ยอดรวม</th><th>เงินสด</th><th>โอน</th></tr>${Object.entries(by).map(([k,b])=>`<tr><td>${esc(k)}</td><td>${b.n}</td><td>${baht(b.t)}</td><td>${baht(b.c)}</td><td>${baht(b.x)}</td></tr>`).join('')}</table></div>
+    <div class="c"><b>รายการล่าสุด</b>${L.slice(0,20).map(o=>{const bad=o.items.reduce((a,i)=>a+i.price*i.qty,0)!==o.total;return `<div class="row"><span>${bad?'⚠️ ยอดไม่ตรงรายการ · ':''}${o.createdAt?o.createdAt.toDate().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}):''} ${esc(o.branchCode)} · ${esc(o.staffName)} · ${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`}).join('')}</div>`},e=>$('#dv').textContent=e.message))};
+  $('#dt').onchange=run;run()
+}
+
+async function menuTab(el){
+  const bs=(await getDocs(collection(db,'branches'))).docs.map(d=>({id:d.id,...d.data()}));
+  if(!bs.length)return el.innerHTML='<div class="c">ยังไม่มีสาขา ไปเพิ่มที่แท็บ "สาขา/พนักงาน" ก่อน</div>';
+  let img='',mode='merge';
+  el.innerHTML=`<div class="c"><div class="f"><select id="bs">${bs.map(b=>`<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.code)})</option>`).join('')}</select>
+  <button class="b o" id="ex">⬇ ส่งออก JSON</button><button class="b" id="im1">⬆ นำเข้า (รวม)</button><button class="b r" id="im2">⬆ นำเข้า (แทนที่ทั้งหมด)</button></div><input type="file" id="fi" accept=".json,application/json" hidden></div>
+  <div class="c"><b>เพิ่มเมนู</b><div class="f" style="margin-top:8px"><input id="nm" placeholder="ชื่อเมนู"><input id="pr" type="number" placeholder="ราคา"><input id="im" type="file" accept="image/*"><button class="b" id="ad">เพิ่ม</button></div></div><div class="c" id="ml"></div>`;
+  const B=()=>$('#bs').value,col=()=>collection(db,'branches',B(),'menu');
+  const list=async()=>(await getDocs(col())).docs.map(d=>({id:d.id,...d.data()}));
+  const watch=()=>{stop();subs.push(onSnapshot(col(),s=>{$('#ml').innerHTML=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.name).localeCompare(b.name,'th')).map(m=>`<div class="row"><span>${m.image?`<img src="${esc(m.image)}" width="36" height="36" style="vertical-align:middle;border-radius:6px"> `:''}${esc(m.name)} · ${baht(m.price)} ${m.available===false?'(ปิดขาย)':''}</span><span><button class="b o" data-a="ed" data-i="${m.id}">แก้ราคา</button> <button class="b o" data-a="tg" data-i="${m.id}">${m.available===false?'เปิดขาย':'ปิดขาย'}</button> <button class="b r" data-a="del" data-i="${m.id}">ลบ</button></span></div>`).join('')||'<span class="mut">ยังไม่มีเมนู</span>'}))};
+  $('#bs').onchange=watch;watch();
+  $('#im').onchange=e=>e.target.files[0]&&compress(e.target.files[0],300,d=>img=d);
+  $('#ad').onclick=async()=>{const n=$('#nm').value.trim(),p=Number($('#pr').value);if(!n||!isFinite(p)||$('#pr').value==='')return alert('กรอกชื่อและราคา');
+    await setDoc(doc(col()),{name:n,price:p,image:img,available:true,origin:'branch'});$('#nm').value=$('#pr').value=$('#im').value='';img=''};
+  $('#ml').onclick=async e=>{const i=e.target.dataset.i,a=e.target.dataset.a;if(!i)return;const r=doc(db,'branches',B(),'menu',i),m=(await getDoc(r)).data();
+    if(a==='ed'){const v=prompt('ราคาใหม่',m.price);if(v!==null&&v!==''&&isFinite(Number(v)))updateDoc(r,{price:Number(v)})}
+    if(a==='tg')updateDoc(r,{available:m.available===false});
+    if(a==='del'&&confirm('ลบเมนู '+m.name+'?'))commit([b=>b.delete(r)])};
+  const exp=async()=>{const L=await list();download(`cocoavan-menu-${B()}-${ymd(new Date())}.json`,{app:'cocoavan-pos',type:'branch-menu',version:1,branchId:B(),exportedAt:new Date().toISOString(),items:L.map(x=>({name:x.name,price:x.price,image:x.image||'',available:x.available!==false}))})};
+  $('#ex').onclick=async()=>{if(!(await list()).length)return alert('สาขานี้ยังไม่มีเมนู');exp()};
+  const pick=m=>{mode=m;$('#fi').click()};$('#im1').onclick=()=>pick('merge');$('#im2').onclick=()=>pick('replace');
+  $('#fi').onchange=e=>{const f=e.target.files[0];e.target.value='';if(!f)return;const r=new FileReader();r.onload=async()=>{
+    let items;try{const j=JSON.parse(r.result);items=clean(Array.isArray(j)?j:j.items)}catch{return alert('ไฟล์ JSON ไม่ถูกต้อง')}
+    if(!items.length)return alert('ไม่พบรายการสินค้าที่ใช้งานได้ในไฟล์');
+    const old=await list();
+    if(mode==='replace'){if(!confirm(`เมนูเดิม ${old.length} รายการของสาขานี้จะถูกลบและแทนที่ด้วย ${items.length} รายการ\nระบบจะดาวน์โหลดไฟล์สำรองเมนูเดิมให้ก่อน ยืนยัน?`))return;if(old.length)await exp()}
+    const ops=[];if(mode==='replace')old.forEach(o=>ops.push(b=>b.delete(doc(db,'branches',B(),'menu',o.id))));
+    items.forEach(x=>{const m=mode==='merge'?old.find(o=>o.name===x.name):null;ops.push(b=>m?b.update(doc(db,'branches',B(),'menu',m.id),x):b.set(doc(col()),{...x,origin:'branch'}))});
+    try{await commit(ops);alert(`นำเข้าสำเร็จ ${items.length} รายการ`)}catch(err){alert('นำเข้าไม่สำเร็จ: '+err.message)}};r.readAsText(f)}
+}
+
+async function staffTab(el){
+  const bs=(await getDocs(collection(db,'branches'))).docs.map(d=>({id:d.id,...d.data()}));
+  el.innerHTML=`<div class="c"><b>เพิ่มสาขา</b><div class="f" style="margin-top:8px"><input id="bn" placeholder="ชื่อสาขา"><input id="bc" placeholder="รหัส เช่น BKK1 (A-Z,0-9)"><button class="b" id="ab">เพิ่มสาขา</button></div><p class="mut">สาขา: ${bs.map(b=>esc(b.name)+' ('+esc(b.code)+')').join(', ')||'-'}</p></div>
+  <div class="c"><b>เพิ่มพนักงาน</b><div class="f" style="margin-top:8px"><input id="su" placeholder="Username (a-z 0-9 . _)"><input id="sn" placeholder="ชื่อที่แสดง"><input id="sp" type="password" placeholder="รหัสผ่าน (8 ตัวขึ้นไป)"><select id="sb">${bs.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select><button class="b" id="as">เพิ่ม</button></div></div>
+  <div class="c"><b>รายชื่อพนักงาน</b><div id="sl"></div></div>
+  <div class="c"><b>QR รับเงิน (เจ้าของแก้ได้คนเดียว)</b><p><input type="file" id="qf" accept="image/*"></p><img id="qp" style="max-width:200px"></div>`;
+  $('#ab').onclick=async()=>{const n=$('#bn').value.trim(),c=$('#bc').value.trim().toUpperCase();if(!n||!/^[A-Z0-9]{2,6}$/.test(c))return alert('ใส่ชื่อสาขา และรหัส 2-6 ตัว (A-Z, 0-9)');await setDoc(doc(db,'branches',c),{name:n,code:c,active:true});staffTab(el)};
+  $('#as').onclick=async()=>{const u=$('#su').value.trim().toLowerCase(),n=$('#sn').value.trim(),p=$('#sp').value,b=bs.find(x=>x.id===$('#sb').value);
+    if(!/^[a-z0-9._]{3,20}$/.test(u)||!n||p.length<8||!b)return alert('ตรวจ Username (a-z 0-9 . _ 3-20 ตัว) ชื่อ รหัสผ่าน 8 ตัวขึ้นไป และสาขา');
+    const sec=initializeApp(cfg,'sec'+Date.now());
+    try{const a=getAuth(sec),cr=await createUserWithEmailAndPassword(a,mail(u),p);
+      await setDoc(doc(db,'staff',cr.user.uid),{username:u,displayName:n,role:'staff',branchId:b.id,branchCode:b.code,active:true,createdAt:serverTimestamp()});await signOut(a);alert('เพิ่มพนักงานแล้ว');$('#su').value=$('#sn').value=$('#sp').value=''}
+    catch(e){alert('เพิ่มไม่สำเร็จ: '+(e.code==='auth/email-already-in-use'?'Username นี้ถูกใช้แล้ว':e.message))}finally{deleteApp(sec)}};
+  subs.push(onSnapshot(collection(db,'staff'),s=>{$('#sl').innerHTML=s.docs.filter(d=>d.id!==me.uid).map(d=>{const x=d.data();return `<div class="row"><span>${esc(x.displayName)} (${esc(x.username)}) · ${esc(x.branchCode||'')} ${x.active?'':'<b style="color:#c62828">[ปิดบัญชี]</b>'}</span><button class="b ${x.active?'r':''}" data-i="${d.id}" data-v="${x.active?0:1}">${x.active?'ปิดบัญชี':'เปิดบัญชี'}</button></div>`}).join('')||'<span class="mut">ยังไม่มีพนักงาน</span>'}));
+  $('#sl').onclick=e=>{const i=e.target.dataset.i;if(i)updateDoc(doc(db,'staff',i),{active:e.target.dataset.v==='1'})};
+  subs.push(onSnapshot(doc(db,'settings','payment'),d=>{$('#qp').src=d.data()?.qr||''}));
+  $('#qf').onchange=e=>e.target.files[0]&&compress(e.target.files[0],500,d=>setDoc(doc(db,'settings','payment'),{qr:d}).then(()=>alert('บันทึก QR แล้ว')))
+}
+boot();
+</script></body></html>
