@@ -46,8 +46,9 @@ function setup(){
     localStorage.setItem('cv_cfg',JSON.stringify(o));location.reload()}
 }
 function login(msg=''){
-  app.innerHTML=`<div class="w" style="max-width:380px"><div class="c"><h2>🍫 เข้าสู่ระบบ</h2><p style="color:#c62828">${esc(msg)}</p><p><input id="u" placeholder="Username" autocapitalize="off"></p><p><input id="p" type="password" placeholder="Password"></p><button class="b" id="go" style="width:100%">เข้าสู่ระบบ</button><p class="mut"><a href="#" id="rs">เปลี่ยนการเชื่อมต่อ Firebase</a></p></div></div>`;
+  app.innerHTML=`<div class="w" style="max-width:380px"><div class="c"><h2>🍫 เข้าสู่ระบบ</h2><p style="color:#c62828">${esc(msg)}</p><p><input id="u" placeholder="Username" autocapitalize="off"></p><p><input id="p" type="password" placeholder="Password"></p><p class="mut"><label><input type="checkbox" id="lsh"> แสดงรหัสผ่าน</label></p><button class="b" id="go" style="width:100%">เข้าสู่ระบบ</button><p class="mut"><a href="#" id="rs">เปลี่ยนการเชื่อมต่อ Firebase</a></p></div></div>`;
   const go=()=>signInWithEmailAndPassword(auth,mail($('#u').value),$('#p').value).catch(()=>login('Username หรือ Password ไม่ถูกต้อง'));
+  $('#lsh').onchange=e=>$('#p').type=e.target.checked?'text':'password';
   $('#go').onclick=go;$('#p').onkeydown=e=>e.key==='Enter'&&go();
   $('#rs').onclick=e=>{e.preventDefault();if(confirm('ลบค่าเชื่อมต่อในเครื่องนี้?')){localStorage.removeItem('cv_cfg');location.reload()}}
 }
@@ -142,12 +143,14 @@ async function menuTab(el){
 async function staffTab(el){
   const bs=(await getDocs(collection(db,'branches'))).docs.map(d=>({id:d.id,...d.data()}));
   el.innerHTML=`<div class="c"><b>เพิ่มสาขา</b><div class="f" style="margin-top:8px"><input id="bn" placeholder="ชื่อสาขา"><input id="bc" placeholder="รหัส เช่น BKK1 (A-Z,0-9)"><button class="b" id="ab">เพิ่มสาขา</button></div><p class="mut">สาขา: ${bs.map(b=>esc(b.name)+' ('+esc(b.code)+')').join(', ')||'-'}</p></div>
-  <div class="c"><b>เพิ่มพนักงาน</b><div class="f" style="margin-top:8px"><input id="su" placeholder="Username (a-z 0-9 . _)"><input id="sn" placeholder="ชื่อที่แสดง"><input id="sp" type="password" placeholder="รหัสผ่าน (8 ตัวขึ้นไป)"><select id="sb">${bs.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select><button class="b" id="as">เพิ่ม</button></div></div>
+  <div class="c"><b>เพิ่มพนักงาน</b><div class="f" style="margin-top:8px"><input id="su" placeholder="Username (a-z 0-9 . _)"><input id="sn" placeholder="ชื่อที่แสดง"><input id="sp" type="password" placeholder="รหัสผ่าน (8 ตัวขึ้นไป)"><label class="mut"><input type="checkbox" id="sh"> แสดงรหัสผ่าน</label><select id="sb">${bs.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select><button class="b" id="as">เพิ่ม</button></div></div>
   <div class="c"><b>รายชื่อพนักงาน</b><div id="sl"></div></div>
   <div class="c"><b>QR รับเงิน (เจ้าของแก้ได้คนเดียว)</b><p><input type="file" id="qf" accept="image/*"></p><img id="qp" style="max-width:200px"></div>`;
+  $('#sh').onchange=e=>$('#sp').type=e.target.checked?'text':'password';
   $('#ab').onclick=async()=>{const n=$('#bn').value.trim(),c=$('#bc').value.trim().toUpperCase();if(!n||!/^[A-Z0-9]{2,6}$/.test(c))return alert('ใส่ชื่อสาขา และรหัส 2-6 ตัว (A-Z, 0-9)');await setDoc(doc(db,'branches',c),{name:n,code:c,active:true});staffTab(el)};
   $('#as').onclick=async()=>{const u=$('#su').value.trim().toLowerCase(),n=$('#sn').value.trim(),p=$('#sp').value,b=bs.find(x=>x.id===$('#sb').value);
-    if(!/^[a-z0-9._]{3,20}$/.test(u)||!n||p.length<8||!b)return alert('ตรวจ Username (a-z 0-9 . _ 3-20 ตัว) ชื่อ รหัสผ่าน 8 ตัวขึ้นไป และสาขา');
+    const bad=!b?'ยังไม่ได้เลือกสาขา (ต้องเพิ่มสาขาก่อน)':!/^[a-z0-9._]{3,20}$/.test(u)?'Username ต้องเป็นอังกฤษพิมพ์เล็ก/ตัวเลข/จุด/ขีดล่าง ยาว 3-20 ตัว และห้ามมีช่องว่าง (เช็กว่าคีย์บอร์ดเป็น ENG)':!n?'ยังไม่ได้ใส่ชื่อที่แสดง':p.length<8?'รหัสผ่านต้องยาวอย่างน้อย 8 ตัว (ตอนนี้ '+p.length+' ตัว)':'';
+    if(bad)return alert(bad);
     const sec=initializeApp(cfg,'sec'+Date.now());
     try{const a=getAuth(sec),cr=await createUserWithEmailAndPassword(a,mail(u),p);
       await setDoc(doc(db,'staff',cr.user.uid),{username:u,displayName:n,role:'staff',branchId:b.id,branchCode:b.code,active:true,createdAt:serverTimestamp()});await signOut(a);alert('เพิ่มพนักงานแล้ว');$('#su').value=$('#sn').value=$('#sp').value=''}
