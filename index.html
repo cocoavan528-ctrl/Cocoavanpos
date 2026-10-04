@@ -17,6 +17,13 @@ input[type=radio]{width:auto}
 @media(max-width:800px){.pos{grid-template-columns:1fr}}
 .mut{color:#8d6e63;font-size:.85em}.f{display:flex;gap:8px;flex-wrap:wrap}.f>*{flex:1;min-width:120px}
 table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid #eee;text-align:right}td:first-child,th:first-child{text-align:left}
+
+[hidden]{display:none!important}[data-k]{cursor:pointer}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:4px 0 10px}.chip{white-space:nowrap;border-radius:999px;padding:8px 16px;border:0;background:#fff;color:#4e342e;font-weight:600;cursor:pointer;box-shadow:0 1px 2px #0002}.chip.on{background:#6d4c41;color:#fff}
+.it{position:relative;text-align:left}.it img,.ph{width:100%;height:110px;object-fit:cover;border-radius:8px}.ph{display:flex;align-items:center;justify-content:center;font-size:2em}
+.pr{position:absolute;right:16px;top:92px;background:#fff;border-radius:8px;padding:1px 8px;font-weight:700;box-shadow:0 1px 3px #0003}
+.pm.on{background:#fff3cd;border-color:#f9a825;color:#6d4c41}.fab{display:none}
+@media(max-width:800px){.cart{position:fixed;left:0;right:0;bottom:0;max-height:78vh;overflow:auto;background:#faf6f3;padding:8px;display:none;z-index:5;box-shadow:0 -4px 12px #0003}.cart.open{display:block}.fab{display:block;position:fixed;right:12px;bottom:12px;z-index:6;padding:14px 18px;border-radius:999px;font-size:1.05em}.w{padding-bottom:80px}}
 </style></head><body><div id="app"></div>
 <script type="module">
 import {initializeApp,deleteApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -35,7 +42,7 @@ const shell=(title,body)=>{app.innerHTML=`<div class="top"><b>🍫 CocoaVan POS 
 function compress(file,max,cb){const r=new FileReader();r.onload=()=>{const i=new Image();i.onload=()=>{const k=Math.min(1,max/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=i.width*k;c.height=i.height*k;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(i,0,0,c.width,c.height);cb(c.toDataURL('image/jpeg',.75))};i.src=r.result};r.readAsDataURL(file)}
 async function commit(ops){for(let i=0;i<ops.length;i+=20){const b=writeBatch(db);ops.slice(i,i+20).forEach(f=>f(b));await b.commit()}}
 function download(name,obj){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-function clean(list){return list.map(x=>({name:String(x?.name||'').trim(),price:Number(x?.price),image:/^(data:image\/|https?:\/\/)/i.test(x?.image||'')?x.image:'',available:x?.available!==false})).filter(x=>x.name&&isFinite(x.price)&&x.price>=0)}
+function clean(list){return list.map(x=>({name:String(x?.name||'').trim(),price:Number(x?.price),category:String(x?.category||'').slice(0,30),color:/^#[0-9a-f]{3,8}$/i.test(x?.color||'')?x.color:'',image:/^(data:image\/|https?:\/\/)/i.test(x?.image||'')?x.image:'',available:x?.available!==false})).filter(x=>x.name&&isFinite(x.price)&&x.price>=0)}
 
 /* ---------- Setup / Login ---------- */
 function setup(){
@@ -65,30 +72,43 @@ function boot(){
 }
 
 /* ---------- POS (พนักงานสาขา) ---------- */
+const DEF_CATS=[{id:'cocoa',name:'COCOA'},{id:'milk',name:'MILK'},{id:'tea',name:'TEA'},{id:'coffee',name:'COFFEE'},{id:'refresh',name:'REFRESH'}];
+const catRef=()=>doc(db,'settings','categories');
 function pos(){
-  let menu=[],cart={},pay='cash',qr='';
-  shell(`${esc(me.branchCode)} · ${esc(me.displayName)}`,`<div class="w pos"><div><div class="grid" id="mn"></div><div class="c"><b>ออเดอร์วันนี้ของสาขา</b> <span id="sum" class="mut"></span><div id="ol"></div></div></div>
-  <div><div class="c"><h3>ตะกร้า</h3><div id="ct"></div><div class="row"><b>รวม</b><b id="tt">0</b></div>
-  <div class="row"><label><input type="radio" name="pm" value="cash" checked> เงินสด</label><label><input type="radio" name="pm" value="transfer"> โอน</label></div>
-  <div id="qr"></div><p><button class="b" id="ok" style="width:100%">ยืนยันการขาย</button></p></div></div></div>`);
-  const total=()=>Object.values(cart).reduce((a,i)=>a+i.price*i.qty,0);
-  const drawMenu=()=>{$('#mn').innerHTML=menu.map(m=>`<div class="it ${m.available===false?'off':''}" data-id="${m.id}">${m.image?`<img src="${esc(m.image)}">`:''}<div><b>${esc(m.name)}</b></div><div>${baht(m.price)}</div></div>`).join('')||'<span class="mut">ยังไม่มีเมนูในสาขานี้ (ให้เจ้าของเพิ่มหรือนำเข้า)</span>'};
-  const drawCart=()=>{const L=Object.values(cart);$('#ct').innerHTML=L.map(i=>`<div class="row"><span>${esc(i.name)} × ${i.qty}</span><span><button class="b o" data-m="${i.id}">−</button> ${baht(i.price*i.qty)}</span></div>`).join('')||'<span class="mut">ยังไม่มีรายการ</span>';$('#tt').textContent=baht(total())};
-  const drawQR=()=>{$('#qr').innerHTML=pay==='transfer'&&qr?`<img src="${esc(qr)}" style="width:100%;max-width:240px;display:block;margin:auto">`:''};
+  let menu=[],cats=DEF_CATS,cat='all',cart={},pay='cash',qr='',orders=[];
+  shell(`🍫 ${esc(me.branchCode)} · ${esc(me.displayName)}`,`<div class="w"><div class="f" id="nv" style="gap:6px;margin-bottom:6px"><button class="b" data-v="sale">ขาย</button><button class="b o" data-v="sum">สรุป</button></div>
+  <div id="sale" class="pos"><div><div class="chips" id="cc"></div><div class="grid" id="mn"></div></div>
+  <div class="cart" id="cp"><div class="c"><h3 style="margin-top:0">รายการขาย</h3><div id="ct"></div><div class="row"><span class="mut">ยอดรวม</span><b id="tt" style="font-size:1.7em">฿0</b></div>
+  <div class="f" style="margin:8px 0"><button class="b o pm on" data-p="cash">💵 เงินสด</button><button class="b o pm" data-p="transfer">📱 สแกนจ่าย</button></div><div id="pd"></div>
+  <button class="b" id="ok" style="width:100%;padding:14px;font-size:1.1em;margin-top:8px">ชำระเงิน</button></div></div></div>
+  <div id="sum" class="c" hidden></div><button class="b fab" id="fb">🛒 <span id="fq">0</span> รายการ · ฿<span id="ft">0</span></button></div>`);
+  const total=()=>Object.values(cart).reduce((a,i)=>a+i.price*i.qty,0),qty=()=>Object.values(cart).reduce((a,i)=>a+i.qty,0);
+  const drawCats=()=>{$('#cc').innerHTML=[{id:'all',name:'ALL'},...cats].map(c=>`<button class="chip ${c.id===cat?'on':''}" data-c="${esc(c.id)}">${esc(c.name)}</button>`).join('')};
+  const drawMenu=()=>{const L=menu.filter(m=>cat==='all'||m.category===cat);$('#mn').innerHTML=L.map(m=>`<div class="it ${m.available===false?'off':''}" data-id="${m.id}">${m.image?`<img src="${esc(m.image)}" onerror="this.outerHTML='<div class=ph>☕</div>'">`:`<div class="ph" style="background:${esc(m.color||'#efebe9')}">☕</div>`}<span class="pr">฿${baht(m.price)}</span><div style="margin-top:6px"><b>${esc(m.name)}</b></div></div>`).join('')||'<span class="mut">ไม่มีเมนูในหมวดนี้</span>'};
+  const chg=()=>{const r=$('#rc');if(r){const v=Number(r.value);$('#cg').textContent=v>=total()&&total()>0?'เงินทอน ฿'+baht(v-total()):''}};
+  const drawPay=()=>{document.querySelectorAll('.pm').forEach(b=>b.classList.toggle('on',b.dataset.p===pay));
+    $('#pd').innerHTML=pay==='transfer'?(qr?`<img src="${esc(qr)}" style="width:100%;max-width:240px;display:block;margin:auto"><p class="mut" style="text-align:center">โอนยอด ฿${baht(total())}</p>`:'<span class="mut">ยังไม่ได้ตั้งค่า QR (เจ้าของอัพโหลดได้)</span>'):'<input id="rc" type="number" placeholder="รับเงินมา (ไม่บังคับ)"><div id="cg" class="mut"></div>';
+    if($('#rc'))$('#rc').oninput=chg};
+  const drawCart=()=>{const L=Object.values(cart);$('#ct').innerHTML=L.map(i=>`<div class="row"><span>${esc(i.name)} × ${i.qty}</span><span>฿${baht(i.price*i.qty)} <button class="b o" data-m="${i.id}">−</button></span></div>`).join('')||'<span class="mut">ยังไม่มีรายการ</span>';
+    $('#tt').textContent='฿'+baht(total());$('#fq').textContent=qty();$('#ft').textContent=baht(total());if(pay==='transfer')drawPay();chg()};
+  const drawSum=()=>{const T=orders.reduce((a,o)=>a+o.total,0),C=orders.filter(o=>o.paymentMethod==='cash').reduce((a,o)=>a+o.total,0);
+    $('#sum').innerHTML=`<h3 style="margin-top:0">สรุปวันนี้ของสาขา</h3><div class="row"><span>${orders.length} บิล</span><b>฿${baht(T)}</b></div><div class="row"><span>เงินสด</span><span>฿${baht(C)}</span></div><div class="row"><span>โอน</span><span>฿${baht(T-C)}</span></div>`+orders.slice(0,30).map(o=>`<div class="row"><span>${o.pending?'⏳ รอซิงก์ ':''}${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`).join('')};
+  $('#cc').onclick=e=>{if(e.target.dataset.c){cat=e.target.dataset.c;drawCats();drawMenu()}};
   $('#mn').onclick=e=>{const el=e.target.closest('.it');if(!el)return;const m=menu.find(x=>x.id===el.dataset.id);if(!m)return;(cart[m.id]??={id:m.id,name:m.name,price:Number(m.price),qty:0}).qty++;drawCart()};
   $('#ct').onclick=e=>{const id=e.target.dataset.m;if(id&&cart[id]){if(--cart[id].qty<=0)delete cart[id];drawCart()}};
-  document.querySelectorAll('[name=pm]').forEach(r=>r.onchange=()=>{pay=r.value;drawQR()});
+  document.querySelectorAll('.pm').forEach(b=>b.onclick=()=>{pay=b.dataset.p;drawPay()});
+  $('#fb').onclick=()=>$('#cp').classList.toggle('open');
+  $('#nv').onclick=e=>{const v=e.target.dataset.v;if(!v)return;$('#sale').hidden=v!=='sale';$('#sum').hidden=v!=='sum';$('#fb').hidden=v!=='sale';document.querySelectorAll('#nv button').forEach(x=>x.className='b'+(x.dataset.v===v?'':' o'))};
   $('#ok').onclick=()=>{const items=Object.values(cart).map(i=>({id:i.id,name:i.name,price:i.price,qty:i.qty}));if(!items.length)return;
     const d=ymd(new Date()),id=`${me.branchCode}-${d.replace(/-/g,'')}-${(Math.random().toString(36)+'000000').slice(2,8)}`;
     setDoc(doc(db,'orders',id),{branchId:me.branchId,branchCode:me.branchCode,staffUid:me.uid,staffName:me.displayName,createdAt:serverTimestamp(),businessDate:d,items,total:total(),paymentMethod:pay,status:'paid'}).catch(e=>alert('บันทึกออเดอร์ไม่สำเร็จ: '+e.message));
-    cart={};drawCart()};
+    cart={};$('#cp').classList.remove('open');drawCart();drawPay();$('#ok').textContent='✔ บันทึกแล้ว';setTimeout(()=>$('#ok').textContent='ชำระเงิน',1200)};
   subs.push(onSnapshot(collection(db,'branches',me.branchId,'menu'),s=>{menu=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.name).localeCompare(b.name,'th'));drawMenu()}));
-  subs.push(onSnapshot(doc(db,'settings','payment'),d=>{qr=d.data()?.qr||'';drawQR()},()=>{}));
+  subs.push(onSnapshot(catRef(),d=>{cats=d.data()?.list||DEF_CATS;drawCats();drawMenu()},()=>{}));
+  subs.push(onSnapshot(doc(db,'settings','payment'),d=>{qr=d.data()?.qr||'';drawPay()},()=>{}));
   subs.push(onSnapshot(query(collection(db,'orders'),where('branchId','==',me.branchId),where('businessDate','==',ymd(new Date()))),s=>{
-    const L=s.docs.map(d=>({...d.data(),pending:d.metadata.hasPendingWrites,id:d.id})).sort((a,b)=>(b.createdAt?.toMillis?.()||Date.now())-(a.createdAt?.toMillis?.()||Date.now()));
-    $('#sum').textContent=`${L.length} บิล · ${baht(L.reduce((a,o)=>a+o.total,0))} บาท`;
-    $('#ol').innerHTML=L.slice(0,15).map(o=>`<div class="row"><span>${o.pending?'⏳ รอซิงก์ ':''}${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`).join('')}));
-  drawCart()
+    orders=s.docs.map(d=>({...d.data(),pending:d.metadata.hasPendingWrites})).sort((a,b)=>(b.createdAt?.toMillis?.()||Date.now())-(a.createdAt?.toMillis?.()||Date.now()));drawSum()}));
+  drawCats();drawMenu();drawCart();drawPay()
 }
 
 /* ---------- เจ้าของ ---------- */
@@ -112,29 +132,46 @@ function dash(el){
 async function menuTab(el){
   const bs=(await getDocs(collection(db,'branches'))).docs.map(d=>({id:d.id,...d.data()}));
   if(!bs.length)return el.innerHTML='<div class="c">ยังไม่มีสาขา ไปเพิ่มที่แท็บ "สาขา/พนักงาน" ก่อน</div>';
-  let img='',mode='merge';
-  el.innerHTML=`<div class="c"><div class="f"><select id="bs">${bs.map(b=>`<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.code)})</option>`).join('')}</select>
+  let img='',mode='merge',cats=DEF_CATS,rows=[],unL=()=>{};
+  const saveCats=l=>setDoc(catRef(),{list:l});
+  el.innerHTML=`<div class="c"><b>หมวดหมู่ (ใช้ร่วมทุกสาขา)</b><div id="cm" class="f" style="margin:8px 0"></div><div class="f"><input id="cn" placeholder="ชื่อหมวดใหม่"><button class="b" id="ca">เพิ่มหมวด</button></div></div>
+  <div class="c"><div class="f"><select id="bs">${bs.map(b=>`<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.code)})</option>`).join('')}</select>
   <button class="b o" id="ex">⬇ ส่งออก JSON</button><button class="b" id="im1">⬆ นำเข้า (รวม)</button><button class="b r" id="im2">⬆ นำเข้า (แทนที่ทั้งหมด)</button></div><input type="file" id="fi" accept=".json,application/json" hidden></div>
-  <div class="c"><b>เพิ่มเมนู</b><div class="f" style="margin-top:8px"><input id="nm" placeholder="ชื่อเมนู"><input id="pr" type="number" placeholder="ราคา"><input id="im" type="file" accept="image/*"><button class="b" id="ad">เพิ่ม</button></div></div><div class="c" id="ml"></div>`;
+  <div class="c"><b>เพิ่มเมนู</b><div class="f" style="margin-top:8px"><input id="nm" placeholder="ชื่อเมนู"><input id="pr" type="number" placeholder="ราคา"><select id="nc"></select><input id="cl" type="color" value="#8d6e63" title="สี"><input id="im" type="file" accept="image/*"><button class="b" id="ad">เพิ่ม</button></div></div><div class="c" id="ml"></div>`;
   const B=()=>$('#bs').value,col=()=>collection(db,'branches',B(),'menu');
   const list=async()=>(await getDocs(col())).docs.map(d=>({id:d.id,...d.data()}));
-  const watch=()=>{stop();subs.push(onSnapshot(col(),s=>{$('#ml').innerHTML=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.name).localeCompare(b.name,'th')).map(m=>`<div class="row"><span>${m.image?`<img src="${esc(m.image)}" width="36" height="36" style="vertical-align:middle;border-radius:6px"> `:''}${esc(m.name)} · ${baht(m.price)} ${m.available===false?'(ปิดขาย)':''}</span><span><button class="b o" data-a="ed" data-i="${m.id}">แก้ราคา</button> <button class="b o" data-a="tg" data-i="${m.id}">${m.available===false?'เปิดขาย':'ปิดขาย'}</button> <button class="b r" data-a="del" data-i="${m.id}">ลบ</button></span></div>`).join('')||'<span class="mut">ยังไม่มีเมนู</span>'}))};
-  $('#bs').onchange=watch;watch();
+  const catOpts=(v,none)=>(none?[{id:'',name:'— ไม่มีหมวด —'}]:[]).concat(cats).map(c=>`<option value="${esc(c.id)}" ${c.id===v?'selected':''}>${esc(c.name)}</option>`).join('');
+  const drawList=()=>{const order=cats.map(c=>c.id);
+    $('#ml').innerHTML=[...rows].sort((a,b)=>(order.indexOf(a.category)+99)%99-(order.indexOf(b.category)+99)%99||String(a.name).localeCompare(b.name,'th')).map(m=>`<div class="row"><span>${m.image?`<img src="${esc(m.image)}" width="36" height="36" style="vertical-align:middle;border-radius:6px"> `:''}${esc(m.name)} · ${baht(m.price)} ${m.available===false?'(ปิดขาย)':''}</span><span><select data-i="${m.id}" data-a="cat" style="width:auto">${catOpts(m.category||'',true)}</select> <button class="b o" data-a="ed" data-i="${m.id}">แก้ราคา</button> <button class="b o" data-a="tg" data-i="${m.id}">${m.available===false?'เปิดขาย':'ปิดขาย'}</button> <button class="b r" data-a="del" data-i="${m.id}">ลบ</button></span></div>`).join('')||'<span class="mut">ยังไม่มีเมนู</span>'};
+  const drawCats=()=>{$('#cm').innerHTML=cats.map(c=>`<span class="chip on">${esc(c.name)} <span data-k="ed" data-c="${esc(c.id)}">✏️</span> <span data-k="del" data-c="${esc(c.id)}">✕</span></span>`).join('');const v=$('#nc').value;$('#nc').innerHTML=catOpts(v||(cats[0]||{}).id,false)};
+  subs.push(()=>unL());
+  subs.push(onSnapshot(catRef(),d=>{cats=d.data()?.list||DEF_CATS;drawCats();drawList()},()=>{}));
+  const watch=()=>{unL();unL=onSnapshot(col(),s=>{rows=s.docs.map(d=>({id:d.id,...d.data()}));drawList()})};
+  $('#bs').onchange=watch;watch();drawCats();
+  $('#cm').onclick=e=>{const k=e.target.dataset.k,id=e.target.dataset.c;if(!k)return;const c=cats.find(x=>x.id===id);if(!c)return;
+    if(k==='ed'){const v=prompt('ชื่อหมวดใหม่',c.name);if(v&&v.trim())saveCats(cats.map(x=>x.id===id?{...x,name:v.trim()}:x))}
+    if(k==='del'&&confirm(`ลบหมวด "${c.name}"?\nเมนูในหมวดนี้จะไม่ถูกลบ แต่จะกลายเป็นไม่มีหมวด`))saveCats(cats.filter(x=>x.id!==id))};
+  $('#ca').onclick=()=>{const n=$('#cn').value.trim();if(!n)return;let id=n.toLowerCase().replace(/[^a-z0-9]/g,'');if(!id||cats.some(x=>x.id===id))id='c'+Date.now().toString(36);saveCats([...cats,{id,name:n}]);$('#cn').value=''};
   $('#im').onchange=e=>e.target.files[0]&&compress(e.target.files[0],300,d=>img=d);
   $('#ad').onclick=async()=>{const n=$('#nm').value.trim(),p=Number($('#pr').value);if(!n||!isFinite(p)||$('#pr').value==='')return alert('กรอกชื่อและราคา');
-    await setDoc(doc(col()),{name:n,price:p,image:img,available:true,origin:'branch'});$('#nm').value=$('#pr').value=$('#im').value='';img=''};
-  $('#ml').onclick=async e=>{const i=e.target.dataset.i,a=e.target.dataset.a;if(!i)return;const r=doc(db,'branches',B(),'menu',i),m=(await getDoc(r)).data();
+    await setDoc(doc(col()),{name:n,price:p,image:img,category:$('#nc').value,color:$('#cl').value,available:true,origin:'branch'});$('#nm').value=$('#pr').value=$('#im').value='';img=''};
+  $('#ml').onchange=e=>{if(e.target.dataset.a==='cat')updateDoc(doc(db,'branches',B(),'menu',e.target.dataset.i),{category:e.target.value})};
+  $('#ml').onclick=async e=>{const i=e.target.dataset.i,a=e.target.dataset.a;if(!i||!['ed','tg','del'].includes(a))return;const r=doc(db,'branches',B(),'menu',i),m=(await getDoc(r)).data();
     if(a==='ed'){const v=prompt('ราคาใหม่',m.price);if(v!==null&&v!==''&&isFinite(Number(v)))updateDoc(r,{price:Number(v)})}
     if(a==='tg')updateDoc(r,{available:m.available===false});
     if(a==='del'&&confirm('ลบเมนู '+m.name+'?'))commit([b=>b.delete(r)])};
-  const exp=async()=>{const L=await list();download(`cocoavan-menu-${B()}-${ymd(new Date())}.json`,{app:'cocoavan-pos',type:'branch-menu',version:1,branchId:B(),exportedAt:new Date().toISOString(),items:L.map(x=>({name:x.name,price:x.price,image:x.image||'',available:x.available!==false}))})};
+  const exp=async()=>{const L=await list();download(`cocoavan-menu-${B()}-${ymd(new Date())}.json`,{app:'cocoavan-pos',type:'branch-menu',version:2,branchId:B(),exportedAt:new Date().toISOString(),categories:cats,items:L.map(x=>({name:x.name,price:x.price,category:x.category||'',color:x.color||'',image:x.image||'',available:x.available!==false}))})};
   $('#ex').onclick=async()=>{if(!(await list()).length)return alert('สาขานี้ยังไม่มีเมนู');exp()};
   const pick=m=>{mode=m;$('#fi').click()};$('#im1').onclick=()=>pick('merge');$('#im2').onclick=()=>pick('replace');
   $('#fi').onchange=e=>{const f=e.target.files[0];e.target.value='';if(!f)return;const r=new FileReader();r.onload=async()=>{
-    let items;try{const j=JSON.parse(r.result);items=clean(Array.isArray(j)?j:j.items)}catch{return alert('ไฟล์ JSON ไม่ถูกต้อง')}
+    let items,j;try{j=JSON.parse(r.result);items=clean(Array.isArray(j)?j:j.items)}catch{return alert('ไฟล์ JSON ไม่ถูกต้อง')}
     if(!items.length)return alert('ไม่พบรายการสินค้าที่ใช้งานได้ในไฟล์');
     const old=await list();
     if(mode==='replace'){if(!confirm(`เมนูเดิม ${old.length} รายการของสาขานี้จะถูกลบและแทนที่ด้วย ${items.length} รายการ\nระบบจะดาวน์โหลดไฟล์สำรองเมนูเดิมให้ก่อน ยืนยัน?`))return;if(old.length)await exp()}
+    const ids=new Set(cats.map(c=>c.id)),add=[];
+    (j&&Array.isArray(j.categories)?j.categories:[]).forEach(c=>{if(c&&c.id&&c.name&&!ids.has(c.id)){ids.add(c.id);add.push({id:String(c.id),name:String(c.name)})}});
+    items.forEach(x=>{if(x.category&&!ids.has(x.category)){ids.add(x.category);add.push({id:x.category,name:x.category.toUpperCase()})}});
+    if(add.length)await saveCats([...cats,...add]);
     const ops=[];if(mode==='replace')old.forEach(o=>ops.push(b=>b.delete(doc(db,'branches',B(),'menu',o.id))));
     items.forEach(x=>{const m=mode==='merge'?old.find(o=>o.name===x.name):null;ops.push(b=>m?b.update(doc(db,'branches',B(),'menu',m.id),x):b.set(doc(col()),{...x,origin:'branch'}))});
     try{await commit(ops);alert(`นำเข้าสำเร็จ ${items.length} รายการ`)}catch(err){alert('นำเข้าไม่สำเร็จ: '+err.message)}};r.readAsText(f)}
