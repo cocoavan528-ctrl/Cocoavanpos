@@ -28,7 +28,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px so
 <script type="module">
 import {initializeApp,deleteApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,signOut,onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,doc,getDoc,setDoc,updateDoc,collection,query,where,onSnapshot,serverTimestamp,writeBatch,getDocs} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,doc,getDoc,setDoc,updateDoc,collection,query,where,onSnapshot,serverTimestamp,writeBatch,getDocs,orderBy,limit} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const $=s=>document.querySelector(s), app=$('#app');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -75,12 +75,13 @@ function boot(){
 const DEF_CATS=[{id:'cocoa',name:'COCOA'},{id:'milk',name:'MILK'},{id:'tea',name:'TEA'},{id:'coffee',name:'COFFEE'},{id:'refresh',name:'REFRESH'}];
 const catRef=()=>doc(db,'settings','categories');
 function pos(){
-  let menu=[],cats=DEF_CATS,cat='all',cart={},pay='cash',qr='',orders=[];
+  let menu=[],cats=DEF_CATS,cat='all',cart={},pay='cash',qr='',orders=[],voids={};
   shell(`🍫 ${esc(me.branchCode)} · ${esc(me.displayName)}`,`<div class="w"><div class="f" id="nv" style="gap:6px;margin-bottom:6px"><button class="b" data-v="sale">ขาย</button><button class="b o" data-v="sum">สรุป</button></div>
   <div id="sale" class="pos"><div><div class="chips" id="cc"></div><div class="grid" id="mn"></div></div>
   <div class="cart" id="cp"><div class="c"><h3 style="margin-top:0">รายการขาย</h3><div id="ct"></div><div class="row"><span class="mut">ยอดรวม</span><b id="tt" style="font-size:1.7em">฿0</b></div>
   <div class="f" style="margin:8px 0"><button class="b o pm on" data-p="cash">💵 เงินสด</button><button class="b o pm" data-p="transfer">📱 สแกนจ่าย</button></div><div id="pd"></div>
-  <button class="b" id="ok" style="width:100%;padding:14px;font-size:1.1em;margin-top:8px">ชำระเงิน</button></div></div></div>
+  <button class="b" id="ok" style="width:100%;padding:14px;font-size:1.1em;margin-top:8px">ชำระเงิน</button>
+  <button class="b o" id="cx" style="width:100%;margin-top:6px">ยกเลิกรายการนี้ (ลูกค้ายังไม่จ่าย)</button></div></div></div>
   <div id="sum" class="c" hidden></div><button class="b fab" id="fb">🛒 <span id="fq">0</span> รายการ · ฿<span id="ft">0</span></button></div>`);
   const total=()=>Object.values(cart).reduce((a,i)=>a+i.price*i.qty,0),qty=()=>Object.values(cart).reduce((a,i)=>a+i.qty,0);
   const drawCats=()=>{$('#cc').innerHTML=[{id:'all',name:'ALL'},...cats].map(c=>`<button class="chip ${c.id===cat?'on':''}" data-c="${esc(c.id)}">${esc(c.name)}</button>`).join('')};
@@ -91,8 +92,20 @@ function pos(){
     if($('#rc'))$('#rc').oninput=chg};
   const drawCart=()=>{const L=Object.values(cart);$('#ct').innerHTML=L.map(i=>`<div class="row"><span>${esc(i.name)} × ${i.qty}</span><span>฿${baht(i.price*i.qty)} <button class="b o" data-m="${i.id}">−</button></span></div>`).join('')||'<span class="mut">ยังไม่มีรายการ</span>';
     $('#tt').textContent='฿'+baht(total());$('#fq').textContent=qty();$('#ft').textContent=baht(total());if(pay==='transfer')drawPay();chg()};
-  const drawSum=()=>{const T=orders.reduce((a,o)=>a+o.total,0),C=orders.filter(o=>o.paymentMethod==='cash').reduce((a,o)=>a+o.total,0);
-    $('#sum').innerHTML=`<h3 style="margin-top:0">สรุปวันนี้ของสาขา</h3><div class="row"><span>${orders.length} บิล</span><b>฿${baht(T)}</b></div><div class="row"><span>เงินสด</span><span>฿${baht(C)}</span></div><div class="row"><span>โอน</span><span>฿${baht(T-C)}</span></div>`+orders.slice(0,30).map(o=>`<div class="row"><span>${o.pending?'⏳ รอซิงก์ ':''}${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`).join('')};
+  const live=o=>!(voids[o.id]&&voids[o.id].status!=='rejected');
+  const drawSum=()=>{const A=orders.filter(live),T=A.reduce((a,o)=>a+o.total,0),C=A.filter(o=>o.paymentMethod==='cash').reduce((a,o)=>a+o.total,0);
+    $('#sum').innerHTML=`<h3 style="margin-top:0">สรุปวันนี้ของสาขา</h3><div class="row"><span>${A.length} บิล</span><b>฿${baht(T)}</b></div><div class="row"><span>เงินสด</span><span>฿${baht(C)}</span></div><div class="row"><span>โอน</span><span>฿${baht(T-C)}</span></div><p class="mut">ยกเลิกบิล ${orders.length-A.length} รายการ (ไม่นับในยอด)</p>`+orders.slice(0,40).map(o=>{const v=voids[o.id],txt=esc(o.items.map(i=>i.name+'×'+i.qty).join(', '));
+      return v&&v.status!=='rejected'?`<div class="row mut"><span><s>${txt}</s> · ยกเลิกแล้ว: ${esc(v.reason)}${v.status==='approved'?' (เจ้าของอนุมัติ)':' (รอเจ้าของตรวจ)'}</span><s>${baht(o.total)}</s></div>`
+        :`<div class="row"><span>${o.pending?'⏳ รอซิงก์ ':''}${txt}${v?' <b style="color:#c62828">(เจ้าของไม่อนุมัติการยกเลิก)</b>':''}</span><span><b>${baht(o.total)}</b> ${!v&&!o.pending?`<button class="b r" data-v="${o.id}">ยกเลิกบิล</button>`:''}</span></div>`}).join('')};
+  const logAct=(action,detail)=>setDoc(doc(collection(db,'auditLogs')),{action,detail:String(detail).slice(0,280),actorUid:me.uid,actorName:me.displayName,branchId:me.branchId,createdAt:serverTimestamp()}).catch(()=>{});
+  $('#sum').onclick=e=>{const id=e.target.dataset.v;if(!id)return;const o=orders.find(x=>x.id===id);if(!o)return;
+    const r=(prompt(`ยกเลิกบิลยอด ฿${baht(o.total)}\n${o.items.map(i=>i.name+'×'+i.qty).join(', ')}\n\nระบุเหตุผล (เช่น คีย์ผิด / ลูกค้าไม่รับ / คืนเงินแล้ว)`)||'').trim();
+    if(!r)return;if(r.length<3)return alert('เหตุผลสั้นเกินไป');
+    if(confirm('ยืนยันยกเลิกบิลนี้? ยอดสรุปจะถูกหักทันที และเจ้าของจะเห็นรายการนี้พร้อมชื่อคุณ'))
+      setDoc(doc(db,'voidRequests',id),{orderId:id,branchId:me.branchId,requestedByUid:me.uid,requestedByName:me.displayName,reason:r.slice(0,200),status:'pending',businessDate:o.businessDate,createdAt:serverTimestamp()}).catch(e=>alert('ยกเลิกไม่สำเร็จ: '+e.message))};
+  $('#cx').onclick=()=>{if(!Object.keys(cart).length)return;const t=total(),txt=Object.values(cart).map(i=>i.name+'×'+i.qty).join(', ');
+    const r=(prompt(`ยกเลิกรายการ ฿${baht(t)} (ยังไม่ชำระเงิน)\nระบุเหตุผล`,'ลูกค้าเปลี่ยนใจ')||'').trim();if(!r)return;
+    logAct('cart_cancel',`ยกเลิกก่อนชำระ ฿${t}: ${txt} | เหตุผล: ${r}`);cart={};$('#cp').classList.remove('open');drawCart();drawPay()};
   $('#cc').onclick=e=>{if(e.target.dataset.c){cat=e.target.dataset.c;drawCats();drawMenu()}};
   $('#mn').onclick=e=>{const el=e.target.closest('.it');if(!el)return;const m=menu.find(x=>x.id===el.dataset.id);if(!m)return;(cart[m.id]??={id:m.id,name:m.name,price:Number(m.price),qty:0}).qty++;drawCart()};
   $('#ct').onclick=e=>{const id=e.target.dataset.m;if(id&&cart[id]){if(--cart[id].qty<=0)delete cart[id];drawCart()}};
@@ -107,7 +120,8 @@ function pos(){
   subs.push(onSnapshot(catRef(),d=>{cats=d.data()?.list||DEF_CATS;drawCats();drawMenu()},()=>{}));
   subs.push(onSnapshot(doc(db,'settings','payment'),d=>{qr=d.data()?.qr||'';drawPay()},()=>{}));
   subs.push(onSnapshot(query(collection(db,'orders'),where('branchId','==',me.branchId),where('businessDate','==',ymd(new Date()))),s=>{
-    orders=s.docs.map(d=>({...d.data(),pending:d.metadata.hasPendingWrites})).sort((a,b)=>(b.createdAt?.toMillis?.()||Date.now())-(a.createdAt?.toMillis?.()||Date.now()));drawSum()}));
+    orders=s.docs.map(d=>({...d.data(),id:d.id,pending:d.metadata.hasPendingWrites})).sort((a,b)=>(b.createdAt?.toMillis?.()||Date.now())-(a.createdAt?.toMillis?.()||Date.now()));drawSum()}));
+  subs.push(onSnapshot(query(collection(db,'voidRequests'),where('branchId','==',me.branchId),where('businessDate','==',ymd(new Date()))),s=>{voids={};s.docs.forEach(d=>voids[d.id]=d.data());drawSum()}));
   drawCats();drawMenu();drawCart();drawPay()
 }
 
@@ -119,13 +133,20 @@ function owner(){
 }
 
 function dash(el){
-  el.innerHTML=`<div class="c"><input type="date" id="dt" value="${ymd(new Date())}" style="width:auto"> <span class="mut">อัพเดตสดอัตโนมัติ</span></div><div id="dv"></div>`;
-  const run=()=>{stop();subs.push(onSnapshot(query(collection(db,'orders'),where('businessDate','==',$('#dt').value)),s=>{
-    const L=s.docs.map(d=>d.data()),by={};let T=0;
+  el.innerHTML=`<div class="c"><input type="date" id="dt" value="${ymd(new Date())}" style="width:auto"> <span class="mut">อัพเดตสดอัตโนมัติ</span></div><div id="dv"></div><div class="c"><b>บันทึกยกเลิกรายการก่อนชำระเงิน (ล่าสุด)</b><div id="al"></div></div>`;
+  let orders=[],voids={};
+  const live=o=>!(voids[o.id]&&voids[o.id].status!=='rejected'),lbl={pending:'รอตรวจ',approved:'อนุมัติแล้ว',rejected:'ไม่อนุมัติ (นับยอดคืน)'};
+  const draw=()=>{const L=orders.filter(live),by={};let T=0;
     L.forEach(o=>{const b=by[o.branchCode]??={n:0,t:0,c:0,x:0};b.n++;b.t+=o.total;o.paymentMethod==='cash'?b.c+=o.total:b.x+=o.total;T+=o.total});
-    L.sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0));
-    $('#dv').innerHTML=`<div class="c"><h2>รวมทุกสาขา ${baht(T)} บาท <span class="mut">(${L.length} บิล)</span></h2><table><tr><th>สาขา</th><th>บิล</th><th>ยอดรวม</th><th>เงินสด</th><th>โอน</th></tr>${Object.entries(by).map(([k,b])=>`<tr><td>${esc(k)}</td><td>${b.n}</td><td>${baht(b.t)}</td><td>${baht(b.c)}</td><td>${baht(b.x)}</td></tr>`).join('')}</table></div>
-    <div class="c"><b>รายการล่าสุด</b>${L.slice(0,20).map(o=>{const bad=o.items.reduce((a,i)=>a+i.price*i.qty,0)!==o.total;return `<div class="row"><span>${bad?'⚠️ ยอดไม่ตรงรายการ · ':''}${o.createdAt?o.createdAt.toDate().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}):''} ${esc(o.branchCode)} · ${esc(o.staffName)} · ${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`}).join('')}</div>`},e=>$('#dv').textContent=e.message))};
+    const V=orders.filter(o=>voids[o.id]);
+    $('#dv').innerHTML=`<div class="c"><h2>รวมทุกสาขา ${baht(T)} บาท <span class="mut">(${L.length} บิล · หักยกเลิกแล้ว)</span></h2><table><tr><th>สาขา</th><th>บิล</th><th>ยอดรวม</th><th>เงินสด</th><th>โอน</th></tr>${Object.entries(by).map(([k,b])=>`<tr><td>${esc(k)}</td><td>${b.n}</td><td>${baht(b.t)}</td><td>${baht(b.c)}</td><td>${baht(b.x)}</td></tr>`).join('')}</table></div>
+    <div class="c"><b>รายการยกเลิกบิล (${V.length})</b>${V.map(o=>{const v=voids[o.id];return `<div class="row"><span>${esc(o.branchCode)} · ${esc(v.requestedByName)} · ฿${baht(o.total)} · ${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}<br><span class="mut">เหตุผล: ${esc(v.reason)} · ${lbl[v.status]||''}</span></span>${v.status==='pending'?`<span><button class="b o" data-v="${o.id}" data-d="approved">อนุมัติ</button> <button class="b r" data-v="${o.id}" data-d="rejected">ไม่อนุมัติ</button></span>`:''}</div>`}).join('')||'<span class="mut">ไม่มี</span>'}</div>
+    <div class="c"><b>รายการล่าสุด</b>${[...L].sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0)).slice(0,20).map(o=>{const bad=o.items.reduce((a,i)=>a+i.price*i.qty,0)!==o.total;return `<div class="row"><span>${bad?'⚠️ ยอดไม่ตรงรายการ · ':''}${o.createdAt?o.createdAt.toDate().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}):''} ${esc(o.branchCode)} · ${esc(o.staffName)} · ${esc(o.items.map(i=>i.name+'×'+i.qty).join(', '))}</span><b>${baht(o.total)}</b></div>`}).join('')}</div>`};
+  $('#dv').onclick=e=>{const id=e.target.dataset.v,d=e.target.dataset.d;if(id&&d&&confirm(d==='approved'?'อนุมัติการยกเลิกบิลนี้?':'ไม่อนุมัติ? ยอดบิลนี้จะกลับมานับในสรุป'))updateDoc(doc(db,'voidRequests',id),{status:d,decidedBy:me.uid,decidedAt:serverTimestamp()}).catch(x=>alert(x.message))};
+  const run=()=>{stop();const dt=$('#dt').value;
+    subs.push(onSnapshot(query(collection(db,'orders'),where('businessDate','==',dt)),s=>{orders=s.docs.map(d=>({...d.data(),id:d.id}));draw()},e=>$('#dv').textContent=e.message));
+    subs.push(onSnapshot(query(collection(db,'voidRequests'),where('businessDate','==',dt)),s=>{voids={};s.docs.forEach(d=>voids[d.id]=d.data());draw()},()=>{}));
+    subs.push(onSnapshot(query(collection(db,'auditLogs'),orderBy('createdAt','desc'),limit(20)),s=>{$('#al').innerHTML=s.docs.map(d=>d.data()).map(a=>`<div class="row"><span><span class="mut">${a.createdAt?a.createdAt.toDate().toLocaleString('th-TH',{dateStyle:'short',timeStyle:'short'}):''}</span> ${esc(a.actorName)} · ${esc(a.detail)}</span></div>`).join('')||'<span class="mut">ไม่มี</span>'},()=>{}))};
   $('#dt').onchange=run;run()
 }
 
